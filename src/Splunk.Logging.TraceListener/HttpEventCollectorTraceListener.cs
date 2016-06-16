@@ -18,6 +18,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Configuration;
 using System.Diagnostics;
 using System.Globalization;
 using System.Net.Http;
@@ -163,12 +164,23 @@ namespace Splunk.Logging
         }
 
         /// <summary>
+        /// HttpEventCollectorTraceListener c-or.
+        /// </summary>      
+        public HttpEventCollectorTraceListener()
+        {
+        }
+
+        /// <summary>
         /// Add a handler to be invoked when some problem is detected during the 
         /// operation of HTTP event collector and it cannot be fixed by resending the data.
         /// </summary>
         /// <param name="handler">A function to handle the exception.</param>
         public void AddLoggingFailureHandler(Action<HttpEventCollectorException> handler)
         {
+            if (sender == null)
+            {
+                initializeSenderFromAttributes();
+            }
             sender.OnError += handler;
         }
 
@@ -176,11 +188,19 @@ namespace Splunk.Logging
         
         public override void Write(string message) 
         {
+            if (sender == null)
+            {
+                initializeSenderFromAttributes();
+            }
             sender.Send(message: message);
         }
 
         public override void WriteLine(string message) 
         {
+            if (sender == null)
+            {
+                initializeSenderFromAttributes();
+            }
             sender.Send(message: message);
         }
 
@@ -191,6 +211,11 @@ namespace Splunk.Logging
             int id, 
             params object[] data)
         {
+            if (sender == null)
+            {
+                initializeSenderFromAttributes();
+            }
+
             sender.Send(
                 id: id.ToString(), 
                 severity: eventType.ToString(),
@@ -204,6 +229,11 @@ namespace Splunk.Logging
             TraceEventType eventType, 
             int id)
         {
+            if (sender == null)
+            {
+                initializeSenderFromAttributes();
+            }
+
             sender.Send(
                 id: id.ToString(),
                 severity: eventType.ToString()
@@ -217,6 +247,11 @@ namespace Splunk.Logging
             int id, 
             string message)
         {
+            if (sender == null)
+            {
+                initializeSenderFromAttributes();
+            }
+
             sender.Send(
                 id: id.ToString(), 
                 severity: eventType.ToString(), 
@@ -232,6 +267,11 @@ namespace Splunk.Logging
             string format, 
             params object[] args)
         {
+            if (sender == null)
+            {
+                initializeSenderFromAttributes();
+            }
+
             string message = args != null ? string.Format(CultureInfo.InvariantCulture, format, args) : format;
             sender.Send(
                 id: id.ToString(),
@@ -247,11 +287,56 @@ namespace Splunk.Logging
             string message, 
             Guid relatedActivityId)
         {
+            if (sender == null)
+            {
+                initializeSenderFromAttributes();
+            }
+
             sender.Send(
                 id: id.ToString(),
                 message: message,
                 data: relatedActivityId
             );
+        }
+
+        private void initializeSenderFromAttributes()
+        {
+            if (!Attributes.ContainsKey(AttributeNames.Uri))
+            {
+                throw new ConfigurationErrorsException("You must provide a Uri for the HttpEventCollectorTraceListener to send messages to. If you're setting up the HttpEventCollectorTraceListener via configuration you should specify a uri attribute, or if you're instanciating the HttpEventCollectorTraceListener in code you should use one of the constructors that takes the Uri as an argument.");
+            }
+
+            if (!Attributes.ContainsKey(AttributeNames.Token))
+            {
+                throw new ConfigurationErrorsException("You must provide a Token for the HttpEventCollectorTraceListener to send messages. If you're setting up the HttpEventCollectorTraceListener via configuration you should specify a token attribute, or if you're instanciating the HttpEventCollectorTraceListener in code you should use one of the constructors that takes the token as an argument.");
+            }
+
+            var uri = new Uri(Attributes[AttributeNames.Uri]);
+            var token = Attributes[AttributeNames.Token];
+
+            HttpEventCollectorSender.SendMode sendMode = Attributes.ContainsKey(AttributeNames.SendMode) ? (HttpEventCollectorSender.SendMode)Enum.Parse(typeof(HttpEventCollectorSender.SendMode), Attributes[AttributeNames.SendMode]) : HttpEventCollectorSender.SendMode.Sequential;
+            int batchInterval = Attributes.ContainsKey(AttributeNames.BatchInterval) ? int.Parse(Attributes[AttributeNames.BatchInterval]) : HttpEventCollectorSender.DefaultBatchInterval;
+            int batchSizeBytes = Attributes.ContainsKey(AttributeNames.BatchSizeBytes) ? int.Parse(Attributes[AttributeNames.BatchSizeBytes]) : HttpEventCollectorSender.DefaultBatchSize;
+            int batchSizeCount = Attributes.ContainsKey(AttributeNames.BatchSizeCount) ? int.Parse(Attributes[AttributeNames.BatchSizeCount]) : HttpEventCollectorSender.DefaultBatchCount;
+
+            HttpEventCollectorEventInfo.Metadata metadata = null;
+            // TODO - parsing meta-data
+
+            HttpEventCollectorSender.HttpEventCollectorMiddleware middleware = null;
+
+            if (Attributes.ContainsKey(AttributeNames.RetriesOnError))
+            {
+                middleware = new HttpEventCollectorResendMiddleware(int.Parse(Attributes[AttributeNames.RetriesOnError])).Plugin;
+            }
+
+            sender = new HttpEventCollectorSender(uri, token, metadata, sendMode, batchInterval, batchSizeBytes, batchSizeCount, middleware, formatter);
+        }
+
+        private readonly string[] attributeNames = { AttributeNames.Uri, AttributeNames.BatchInterval, AttributeNames.BatchSizeBytes, AttributeNames.BatchSizeCount, AttributeNames.MetadataIndex, AttributeNames.MetadataSource, AttributeNames.MetadataSourceType, AttributeNames.MetadataHost, AttributeNames.SendMode, AttributeNames.Token, AttributeNames.RetriesOnError };
+
+        protected override string[] GetSupportedAttributes()
+        {
+            return attributeNames;
         }
 
         #endregion
@@ -277,6 +362,21 @@ namespace Splunk.Logging
         ~HttpEventCollectorTraceListener()
         {
             Dispose(false);
+        }
+
+        private class AttributeNames
+        {
+            internal const string Uri = "uri";
+            internal const string Token = "token";
+            internal const string MetadataIndex = "metadata-index";
+            internal const string MetadataSource = "metadata-source";
+            internal const string MetadataSourceType = "metadata-sourcetype";
+            internal const string MetadataHost = "metadata-host";
+            internal const string SendMode = "sendMode";
+            internal const string BatchInterval = "batchInterval";
+            internal const string BatchSizeBytes = "batchSizeBytes";
+            internal const string BatchSizeCount = "batchSizeCount";
+            internal const string RetriesOnError = "retriesOnError";
         }
     }
 }
